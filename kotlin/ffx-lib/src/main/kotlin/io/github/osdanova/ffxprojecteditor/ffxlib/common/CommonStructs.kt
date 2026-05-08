@@ -3,7 +3,7 @@ package io.github.osdanova.ffxprojecteditor.ffxlib.common
 import io.github.osdanova.ffxprojecteditor.binary.BinField
 
 /**
- * Header used at the start of many FFX entry-table files (e.g. battle/kernel/*.bin).
+ * Header used at the start of many FFX entry-table files (e.g. battle/kernel/ *.bin).
  * Total size is 0x14 bytes.
  */
 class FileHeader {
