@@ -1,5 +1,7 @@
 package io.github.osdanova.ffxprojecteditor.ffxlib.monster
 
+import io.github.osdanova.ffxprojecteditor.binary.BinaryMapping
+import io.github.osdanova.ffxprojecteditor.ffxlib.common.TextScriptInfo
 import io.github.osdanova.ffxprojecteditor.test.Fixtures
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.Test
@@ -211,6 +213,51 @@ class MonsterRoundTripTest {
         val parsedPartial = Monster_Loot.readSingle(partial)
         assertEquals(2, parsedPartial.padding.size)
         assertContentEquals(partial, parsedPartial.writeSingle())
+    }
+
+    /**
+     * Real monster stat-sheet text blobs include bytes that no TS entry points
+     * at — alignment / unreferenced gap bytes. Without preservation, the writer
+     * compacts the blob to the minimum needed and silently drops those gap
+     * bytes, shifting every downstream pointer in the parent monster file. This
+     * test hand-builds that exact shape and verifies the round trip preserves
+     * it.
+     */
+    @Test
+    fun statSheetWithUnreferencedGapBytesRoundTripsByteForByte() {
+        // Text blob layout: name at offset 0 ("AB" + NULL), 3 unreferenced gap
+        // bytes (0xFF), then sensor at offset 6 ("C" + NULL). Scan, unusedText1
+        // and unusedText2 all point at offset 2 (the NULL after the name) so
+        // they round-trip as empty.
+        val textBlob = byteArrayOf(
+            'A'.code.toByte(), 'B'.code.toByte(), 0,    // [0..2]
+            -1, -1, -1,                                  // [3..5] gap (alignment-shaped padding)
+            'C'.code.toByte(), 0,                        // [6..7]
+        )
+
+        fun ts(off: Int, sid: Int) = TextScriptInfo().apply {
+            offset = off.toUShort(); scriptId = sid.toUShort()
+        }
+
+        val struct = MonsterStatSheetStruct().apply {
+            nameTSInfo = ts(0, 1)
+            sensorTSInfo = ts(6, 2)
+            unusedText1TSInfo = ts(2, 0)
+            scanTSInfo = ts(2, 0)
+            unusedText2TSInfo = ts(2, 0)
+            statSheet = Monster_StatSheet().apply { hp = 99u; monsterId = 7 }
+        }
+
+        val original = BinaryMapping.toByteArray(struct, sizeHint = 512) + textBlob
+
+        val parsed = Monster_StatSheet.readSingle(original)
+        assertContentEquals(byteArrayOf('A'.code.toByte(), 'B'.code.toByte()), parsed.nameScriptBytes)
+        assertContentEquals(byteArrayOf('C'.code.toByte()), parsed.sensorScriptBytes)
+        assertEquals(0, parsed.unusedText1ScriptBytes.size)
+
+        val rewritten = parsed.writeSingle()
+        assertContentEquals(original, rewritten,
+            "stat-sheet with unreferenced gap bytes did not round-trip byte-for-byte")
     }
 
     /**

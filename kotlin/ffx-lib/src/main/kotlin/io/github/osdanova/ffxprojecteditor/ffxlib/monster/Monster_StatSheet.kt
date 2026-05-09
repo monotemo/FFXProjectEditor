@@ -154,7 +154,7 @@ class Monster_StatSheet {
     var scanScriptId: UShort = 0u
     var unusedText2ScriptId: UShort = 0u
 
-	// Recorded on read so byte-for-byte round-trips are possible. Real monster
+    // Recorded on read so byte-for-byte round-trips are possible. Real monster
     // stat-sheet text blobs commonly contain bytes that no TS entry points at
     // (alignment / unreferenced gaps); the writer can't reconstruct those from
     // script bytes alone, so we capture the original layout here and replay it
@@ -408,15 +408,15 @@ class Monster_StatSheet {
 
             statSheet.preservedNameOffset = statSheetStruct.nameTSInfo.offset
             statSheet.preservedSensorOffset = statSheetStruct.sensorTSInfo.offset
-			statSheet.preservedUnusedText1Offset = statSheetStruct.unusedText1TSInfo.offset
-			statSheet.preservedScanOffset = statSheetStruct.scanTSInfo.offset
-			statSheet.preservedUnusedText2Offset = statSheetStruct.unusedText2TSInfo.offset
-			statSheet.preservedTextBlob = textFile
+            statSheet.preservedUnusedText1Offset = statSheetStruct.unusedText1TSInfo.offset
+            statSheet.preservedScanOffset = statSheetStruct.scanTSInfo.offset
+            statSheet.preservedUnusedText2Offset = statSheetStruct.unusedText2TSInfo.offset
+            statSheet.preservedTextBlob = textFile
 
             return statSheet
         }
 
-		/**
+        /**
          * Returns the captured trailing blob if [statSheet] still resolves the
          * same script bytes via the recorded offsets. Returning null forces a
          * full rebuild on write.
@@ -451,7 +451,7 @@ class Monster_StatSheet {
         val statSheetStruct = MonsterStatSheetStruct()
         statSheetStruct.statSheet = this
 
-		val preservedBlob = canReusePreservedBlob(this)
+        val preservedBlob = canReusePreservedBlob(this)
         if (preservedBlob != null) {
             statSheetStruct.nameTSInfo.offset = preservedNameOffset!!
             statSheetStruct.nameTSInfo.scriptId = nameScriptId
