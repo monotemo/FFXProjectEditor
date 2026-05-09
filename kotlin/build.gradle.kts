@@ -23,6 +23,12 @@ subprojects {
 
         tasks.withType<Test>().configureEach {
             useJUnitPlatform()
+            // Forward FFX_FIXTURES_DIR so opt-in fixture-backed tests can
+            // locate the user's local extracted master folder.
+            System.getenv("FFX_FIXTURES_DIR")?.let { environment("FFX_FIXTURES_DIR", it) }
+            testLogging {
+                events("skipped", "failed")
+            }
         }
     }
 }
