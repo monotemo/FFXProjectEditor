@@ -154,6 +154,18 @@ class Monster_StatSheet {
     var scanScriptId: UShort = 0u
     var unusedText2ScriptId: UShort = 0u
 
+	// Recorded on read so byte-for-byte round-trips are possible. Real monster
+    // stat-sheet text blobs commonly contain bytes that no TS entry points at
+    // (alignment / unreferenced gaps); the writer can't reconstruct those from
+    // script bytes alone, so we capture the original layout here and replay it
+    // when nothing has been edited.
+    var preservedNameOffset: UShort? = null
+    var preservedSensorOffset: UShort? = null
+    var preservedUnusedText1Offset: UShort? = null
+    var preservedScanOffset: UShort? = null
+    var preservedUnusedText2Offset: UShort? = null
+    var preservedTextBlob: ByteArray? = null
+
     // ---- Property flag accessors ----
     var prop_Armored: Boolean
         get() = BitFlag_Util.isFlagSet(property_Flags, PropertyFlags.Armored.mask.toUShort())
@@ -394,7 +406,39 @@ class Monster_StatSheet {
             statSheet.scanScriptId = statSheetStruct.scanTSInfo.scriptId
             statSheet.unusedText2ScriptId = statSheetStruct.unusedText2TSInfo.scriptId
 
+            statSheet.preservedNameOffset = statSheetStruct.nameTSInfo.offset
+            statSheet.preservedSensorOffset = statSheetStruct.sensorTSInfo.offset
+			statSheet.preservedUnusedText1Offset = statSheetStruct.unusedText1TSInfo.offset
+			statSheet.preservedScanOffset = statSheetStruct.scanTSInfo.offset
+			statSheet.preservedUnusedText2Offset = statSheetStruct.unusedText2TSInfo.offset
+			statSheet.preservedTextBlob = textFile
+
             return statSheet
+        }
+
+		/**
+         * Returns the captured trailing blob if [statSheet] still resolves the
+         * same script bytes via the recorded offsets. Returning null forces a
+         * full rebuild on write.
+         */
+        private fun canReusePreservedBlob(statSheet: Monster_StatSheet): ByteArray? {
+            val blob = statSheet.preservedTextBlob ?: return null
+            val n = statSheet.preservedNameOffset ?: return null
+            val s = statSheet.preservedSensorOffset ?: return null
+            val u1 = statSheet.preservedUnusedText1Offset ?: return null
+            val sc = statSheet.preservedScanOffset ?: return null
+            val u2 = statSheet.preservedUnusedText2Offset ?: return null
+            if (!statSheet.nameScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, n.toInt()))) return null
+            if (!statSheet.sensorScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, s.toInt()))) return null
+            if (!statSheet.unusedText1ScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, u1.toInt()))) return null
+            if (!statSheet.scanScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, sc.toInt()))) return null
+            if (!statSheet.unusedText2ScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, u2.toInt()))) return null
+            return blob
         }
     }
 
@@ -406,6 +450,21 @@ class Monster_StatSheet {
     fun writeSingle(): ByteArray {
         val statSheetStruct = MonsterStatSheetStruct()
         statSheetStruct.statSheet = this
+
+		val preservedBlob = canReusePreservedBlob(this)
+        if (preservedBlob != null) {
+            statSheetStruct.nameTSInfo.offset = preservedNameOffset!!
+            statSheetStruct.nameTSInfo.scriptId = nameScriptId
+            statSheetStruct.sensorTSInfo.offset = preservedSensorOffset!!
+            statSheetStruct.sensorTSInfo.scriptId = sensorScriptId
+            statSheetStruct.unusedText1TSInfo.offset = preservedUnusedText1Offset!!
+            statSheetStruct.unusedText1TSInfo.scriptId = unusedText1ScriptId
+            statSheetStruct.scanTSInfo.offset = preservedScanOffset!!
+            statSheetStruct.scanTSInfo.scriptId = scanScriptId
+            statSheetStruct.unusedText2TSInfo.offset = preservedUnusedText2Offset!!
+            statSheetStruct.unusedText2TSInfo.scriptId = unusedText2ScriptId
+            return BinaryMapping.toByteArray(statSheetStruct, sizeHint = 512) + preservedBlob
+        }
 
         // Build the trailing text file, recording each entry's offset/id back
         // into the wrapping struct.
