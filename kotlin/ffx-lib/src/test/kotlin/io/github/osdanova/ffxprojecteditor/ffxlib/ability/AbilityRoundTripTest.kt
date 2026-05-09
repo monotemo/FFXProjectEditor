@@ -90,7 +90,7 @@ class AbilityRoundTripTest {
             val rewritten = Ability_Command.writeList(parsed, hasExtra)
             assertContentEquals(
                 original, rewritten,
-                "$rel did not round-trip byte-for-byte (size=${original.size})"
+                "$rel did not round-trip byte-for-byte\n" + diffReport(original, rewritten)
             )
         }
     }
@@ -102,8 +102,34 @@ class AbilityRoundTripTest {
         assumeTrue(original != null, "arms_rate.bin not present in fixtures")
         val parsed = Arms_Rate.readList(original!!)
         val rewritten = Arms_Rate.writeList(parsed)
-        assertContentEquals(original, rewritten, "arms_rate did not round-trip byte-for-byte")
+        assertContentEquals(
+            original, rewritten,
+            "arms_rate did not round-trip byte-for-byte\n" + diffReport(original, rewritten)
+        )
     }
+
+    private fun diffReport(original: ByteArray, rewritten: ByteArray): String {
+        val sb = StringBuilder()
+        sb.appendLine("  original.size = ${original.size}, rewritten.size = ${rewritten.size}")
+        sb.appendLine("  first 20 bytes original  : ${original.take(20).hex()}")
+        sb.appendLine("  first 20 bytes rewritten : ${rewritten.take(20).hex()}")
+        val firstDiff = (0 until minOf(original.size, rewritten.size)).firstOrNull {
+            original[it] != rewritten[it]
+        }
+        if (firstDiff == null) {
+            sb.appendLine("  no byte diff in common prefix; trailing bytes differ (length mismatch)")
+        } else {
+            val from = (firstDiff - 8).coerceAtLeast(0)
+            val to = (firstDiff + 16).coerceAtMost(minOf(original.size, rewritten.size))
+            sb.appendLine("  first diff at offset 0x${firstDiff.toString(16)} ($firstDiff)")
+            sb.appendLine("    original  [$from..$to): ${original.sliceArray(from until to).hex()}")
+            sb.appendLine("    rewritten [$from..$to): ${rewritten.sliceArray(from until to).hex()}")
+        }
+        return sb.toString()
+    }
+
+    private fun List<Byte>.hex(): String = joinToString(" ") { "%02x".format(it.toInt() and 0xff) }
+    private fun ByteArray.hex(): String = toList().hex()
 
     private fun newCommand(withExtra: Boolean): Ability_Command = Ability_Command().apply {
         anim1Id = 0x1001

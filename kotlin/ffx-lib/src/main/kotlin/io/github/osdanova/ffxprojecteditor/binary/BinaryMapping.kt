@@ -54,13 +54,19 @@ object BinaryMapping {
         if (buffer.order() != ByteOrder.LITTLE_ENDIAN) buffer.order(ByteOrder.LITTLE_ENDIAN)
         val kClass = value::class
         val start = buffer.position()
+        var maxEnd = start
         for ((prop, ann) in orderedFields(kClass)) {
             if (ann.offset >= 0) buffer.position(start + ann.offset)
             @Suppress("UNCHECKED_CAST")
             val getter = prop as kotlin.reflect.KProperty1<Any, Any?>
             getter.isAccessible = true
             writeValue(buffer, getter.get(value), prop.returnType, ann)
+            if (buffer.position() > maxEnd) maxEnd = buffer.position()
         }
+        // With explicit offset annotations, fields can be written out of order;
+        // leave the cursor at the highest byte we touched so toByteArray and
+        // sequential writers downstream see the full extent of the struct.
+        buffer.position(maxEnd)
     }
 
     fun toByteArray(value: Any, sizeHint: Int = 256): ByteArray {
@@ -72,9 +78,25 @@ object BinaryMapping {
         return out
     }
 
+    /**
+     * Walks fields in **source-declaration order**, not Kotlin reflection's
+     * `memberProperties` order. The latter is contractually unordered (a `Set`)
+     * and has been observed to return fields alphabetically on at least one
+     * JDK / Kotlin combination, which silently scrambles the on-disk byte
+     * layout. We pin to `Class.getDeclaredFields()`, which HotSpot returns in
+     * the order Kotlin emitted them — matching the C# `[Data]` ordering that
+     * defines the on-disk format.
+     */
+    private val fieldsCache = java.util.concurrent.ConcurrentHashMap<KClass<*>, List<Pair<kotlin.reflect.KProperty1<*, *>, BinField>>>()
+
     private fun orderedFields(kClass: KClass<*>): List<Pair<kotlin.reflect.KProperty1<*, *>, BinField>> =
-        kClass.memberProperties
-            .mapNotNull { p -> p.findAnnotation<BinField>()?.let { p to it } }
+        fieldsCache.getOrPut(kClass) {
+            val byName = kClass.memberProperties.associateBy { it.name }
+            kClass.java.declaredFields.mapNotNull { f ->
+                val prop = byName[f.name] ?: return@mapNotNull null
+                prop.findAnnotation<BinField>()?.let { prop to it }
+            }
+        }
 
     private fun readValue(buf: ByteBuffer, type: KType, ann: BinField): Any? {
         val classifier = type.classifier ?: error("Missing classifier for $type")

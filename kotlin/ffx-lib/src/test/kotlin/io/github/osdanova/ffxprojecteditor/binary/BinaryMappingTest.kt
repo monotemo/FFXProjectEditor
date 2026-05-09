@@ -91,6 +91,39 @@ class BinaryMappingTest {
         assertEquals(src.tail, back.tail)
     }
 
+    class DeclarationOrderSensitive {
+        // Names are deliberately chosen so alphabetical order (alpha, beta,
+        // gamma) DIFFERS from declaration order (gamma, alpha, beta). If the
+        // mapper accidentally picks alphabetical order, the bytes below
+        // won't decode the same values back.
+        @BinField var gamma: Byte = 0
+        @BinField var alpha: Short = 0
+        @BinField var beta: Int = 0
+    }
+
+    @Test
+    fun fieldsAreSerializedInDeclarationOrderNotAlphabeticalOrder() {
+        val src = DeclarationOrderSensitive().apply {
+            gamma = 0x42
+            alpha = 0x1234
+            beta = 0x789ABCDE
+        }
+        val bytes = BinaryMapping.toByteArray(src, 16)
+        assertEquals(7, bytes.size, "size must be 1 + 2 + 4 = 7 in declaration order")
+        // Bytes by position: [gamma, alpha lo, alpha hi, beta b0, beta b1, beta b2, beta b3]
+        assertEquals(0x42.toByte(), bytes[0])
+        assertEquals(0x34.toByte(), bytes[1])
+        assertEquals(0x12.toByte(), bytes[2])
+        assertEquals(0xDE.toByte(), bytes[3])
+        assertEquals(0xBC.toByte(), bytes[4])
+        assertEquals(0x9A.toByte(), bytes[5])
+        assertEquals(0x78.toByte(), bytes[6])
+        val back = BinaryMapping.read(bytes, DeclarationOrderSensitive::class)
+        assertEquals(src.gamma, back.gamma)
+        assertEquals(src.alpha, back.alpha)
+        assertEquals(src.beta, back.beta)
+    }
+
     class WithOffsets {
         @BinField(offset = 0x4) var late: UInt = 0u
         @BinField(offset = 0x0) var early: UInt = 0u
