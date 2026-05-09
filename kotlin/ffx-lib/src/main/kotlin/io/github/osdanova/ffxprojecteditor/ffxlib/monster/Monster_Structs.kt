@@ -21,8 +21,12 @@ class MonsterHeaderFile {
     /** Size of the whole file. */
     @BinField var fileSize: Int = 0
 
-    /** Aligns the header to 16 bytes. */
-    @BinField(count = 16) var padding: ByteArray = ByteArray(16)
+    // 12 bytes of padding so the header lands at exactly 0x30, matching where
+    // Monster_File.write starts the body. (The C# source declares Count=16, but
+    // its writer also positions the body at 0x30 — meaning the C# code actually
+    // corrupts the first 4 bytes of the AI section on every write. We diverge
+    // here so round-trips are byte-faithful.)
+    @BinField(count = 12) var padding: ByteArray = ByteArray(12)
 }
 
 /**
