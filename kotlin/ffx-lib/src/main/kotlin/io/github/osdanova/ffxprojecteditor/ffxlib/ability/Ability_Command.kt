@@ -262,6 +262,20 @@ class Ability_Command {
     var descriptionScriptId: UShort = 0u
     var unusedText2ScriptId: UShort = 0u
 
+    // Recorded on read so byte-for-byte round-trips are possible. Real game
+    // files reuse the same text-blob offset across multiple TS entries (an
+    // empty entry typically points back at offset 0 instead of getting a
+    // fresh trailing NULL appended). The writer can't reconstruct that
+    // sharing from script bytes alone, so we capture the original layout
+    // here and replay it when nothing has been edited.
+    var preservedNameOffset: UShort? = null
+    var preservedUnusedText1Offset: UShort? = null
+    var preservedDescriptionOffset: UShort? = null
+    var preservedUnusedText2Offset: UShort? = null
+
+    /** Original trailing text blob captured on read, shared across a list. */
+    var preservedTextBlob: ByteArray? = null
+
     // region Flag accessors
 
     // -- MenuFlags
@@ -580,6 +594,28 @@ class Ability_Command {
 
     /** Serialize this single command + its trailing text bytes. */
     fun writeSingle(hasExtraInfo: Boolean): ByteArray {
+        val preservedBlob = canReusePreserved(this)
+        if (preservedBlob != null) {
+            val commandStruct = Ability_CommandStruct().apply {
+                abilityInfo = this@Ability_Command
+                nameTSInfo.offset = preservedNameOffset!!
+                nameTSInfo.scriptId = nameScriptId
+                unusedText1TSInfo.offset = preservedUnusedText1Offset!!
+                unusedText1TSInfo.scriptId = unusedText1ScriptId
+                descriptionTSInfo.offset = preservedDescriptionOffset!!
+                descriptionTSInfo.scriptId = descriptionScriptId
+                unusedText2TSInfo.offset = preservedUnusedText2Offset!!
+                unusedText2TSInfo.scriptId = unusedText2ScriptId
+            }
+            val structBytes = BinaryMapping.toByteArray(commandStruct)
+            val extraBytes = if (hasExtraInfo) {
+                BinaryMapping.toByteArray(extraInfo ?: ExtraCommandInfo())
+            } else {
+                ByteArray(0)
+            }
+            return structBytes + extraBytes + preservedBlob
+        }
+
         val commandStruct = Ability_CommandStruct().apply { abilityInfo = this@Ability_Command }
 
         // Text File
@@ -626,14 +662,7 @@ class Ability_Command {
             buffer.get(textFile)
 
             val command = commandStruct.abilityInfo
-            command.nameScriptBytes = FfxEncoding.getScriptBytesFromTextFile(textFile, commandStruct.nameTSInfo.offset.toInt())
-            command.unusedText1ScriptBytes = FfxEncoding.getScriptBytesFromTextFile(textFile, commandStruct.unusedText1TSInfo.offset.toInt())
-            command.descriptionScriptBytes = FfxEncoding.getScriptBytesFromTextFile(textFile, commandStruct.descriptionTSInfo.offset.toInt())
-            command.unusedText2ScriptBytes = FfxEncoding.getScriptBytesFromTextFile(textFile, commandStruct.unusedText2TSInfo.offset.toInt())
-            command.nameScriptId = commandStruct.nameTSInfo.scriptId
-            command.unusedText1ScriptId = commandStruct.unusedText1TSInfo.scriptId
-            command.descriptionScriptId = commandStruct.descriptionTSInfo.scriptId
-            command.unusedText2ScriptId = commandStruct.unusedText2TSInfo.scriptId
+            populateFromStruct(command, commandStruct, textFile)
             return command
         }
 
@@ -650,21 +679,102 @@ class Ability_Command {
                     commandStruct.abilityInfo.extraInfo = BinaryMapping.read<ExtraCommandInfo>(buffer)
                 }
                 val command = commandStruct.abilityInfo
-                command.nameScriptBytes = FfxEncoding.getScriptBytesFromTextFile(secondFile, commandStruct.nameTSInfo.offset.toInt())
-                command.unusedText1ScriptBytes = FfxEncoding.getScriptBytesFromTextFile(secondFile, commandStruct.unusedText1TSInfo.offset.toInt())
-                command.descriptionScriptBytes = FfxEncoding.getScriptBytesFromTextFile(secondFile, commandStruct.descriptionTSInfo.offset.toInt())
-                command.unusedText2ScriptBytes = FfxEncoding.getScriptBytesFromTextFile(secondFile, commandStruct.unusedText2TSInfo.offset.toInt())
-                command.nameScriptId = commandStruct.nameTSInfo.scriptId
-                command.unusedText1ScriptId = commandStruct.unusedText1TSInfo.scriptId
-                command.descriptionScriptId = commandStruct.descriptionTSInfo.scriptId
-                command.unusedText2ScriptId = commandStruct.unusedText2TSInfo.scriptId
+                populateFromStruct(command, commandStruct, secondFile)
                 commandList.add(command)
             }
             return commandList
         }
 
+        private fun populateFromStruct(
+            command: Ability_Command,
+            commandStruct: Ability_CommandStruct,
+            textFile: ByteArray,
+        ) {
+            command.nameScriptBytes = FfxEncoding.getScriptBytesFromTextFile(textFile, commandStruct.nameTSInfo.offset.toInt())
+            command.unusedText1ScriptBytes = FfxEncoding.getScriptBytesFromTextFile(textFile, commandStruct.unusedText1TSInfo.offset.toInt())
+            command.descriptionScriptBytes = FfxEncoding.getScriptBytesFromTextFile(textFile, commandStruct.descriptionTSInfo.offset.toInt())
+            command.unusedText2ScriptBytes = FfxEncoding.getScriptBytesFromTextFile(textFile, commandStruct.unusedText2TSInfo.offset.toInt())
+            command.nameScriptId = commandStruct.nameTSInfo.scriptId
+            command.unusedText1ScriptId = commandStruct.unusedText1TSInfo.scriptId
+            command.descriptionScriptId = commandStruct.descriptionTSInfo.scriptId
+            command.unusedText2ScriptId = commandStruct.unusedText2TSInfo.scriptId
+            command.preservedNameOffset = commandStruct.nameTSInfo.offset
+            command.preservedUnusedText1Offset = commandStruct.unusedText1TSInfo.offset
+            command.preservedDescriptionOffset = commandStruct.descriptionTSInfo.offset
+            command.preservedUnusedText2Offset = commandStruct.unusedText2TSInfo.offset
+            command.preservedTextBlob = textFile
+        }
+
+        /**
+         * Returns the original text blob if [command] still matches what was
+         * captured on read (offsets recorded, blob present, and every script's
+         * current bytes equal the bytes at the recorded offset). Returns null
+         * if anything has been edited or the command was synthetic, signalling
+         * the writer to rebuild the blob from scratch.
+         */
+        private fun canReusePreserved(command: Ability_Command): ByteArray? {
+            val blob = command.preservedTextBlob ?: return null
+            val n = command.preservedNameOffset ?: return null
+            val u1 = command.preservedUnusedText1Offset ?: return null
+            val d = command.preservedDescriptionOffset ?: return null
+            val u2 = command.preservedUnusedText2Offset ?: return null
+            if (!command.nameScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, n.toInt()))) return null
+            if (!command.unusedText1ScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, u1.toInt()))) return null
+            if (!command.descriptionScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, d.toInt()))) return null
+            if (!command.unusedText2ScriptBytes.contentEquals(
+                    FfxEncoding.getScriptBytesFromTextFile(blob, u2.toInt()))) return null
+            return blob
+        }
+
+        /**
+         * Returns the shared blob if every command in [commandList] points at
+         * the same preserved blob with valid offsets and unedited script bytes.
+         * Otherwise returns null and the writer falls back to rebuilding.
+         */
+        private fun canReusePreservedList(commandList: List<Ability_Command>): ByteArray? {
+            if (commandList.isEmpty()) return null
+            val blob = commandList[0].preservedTextBlob ?: return null
+            for (c in commandList) {
+                if (c.preservedTextBlob !== blob) return null
+                if (canReusePreserved(c) == null) return null
+            }
+            return blob
+        }
+
         /** Pack a list of commands into an EntryListFile byte array. */
         fun writeList(commandList: List<Ability_Command>, hasExtraInfo: Boolean): ByteArray {
+            val entrySize: Short = if (hasExtraInfo) 0x60 else 0x5C
+            val preservedBlob = canReusePreservedList(commandList)
+            if (preservedBlob != null) {
+                var listFile = ByteArray(0)
+                for (command in commandList) {
+                    val commandStruct = Ability_CommandStruct().apply {
+                        abilityInfo = command
+                        nameTSInfo.offset = command.preservedNameOffset!!
+                        nameTSInfo.scriptId = command.nameScriptId
+                        unusedText1TSInfo.offset = command.preservedUnusedText1Offset!!
+                        unusedText1TSInfo.scriptId = command.unusedText1ScriptId
+                        descriptionTSInfo.offset = command.preservedDescriptionOffset!!
+                        descriptionTSInfo.scriptId = command.descriptionScriptId
+                        unusedText2TSInfo.offset = command.preservedUnusedText2Offset!!
+                        unusedText2TSInfo.scriptId = command.unusedText2ScriptId
+                    }
+                    listFile += BinaryMapping.toByteArray(commandStruct)
+                    if (hasExtraInfo) {
+                        listFile += BinaryMapping.toByteArray(command.extraInfo ?: ExtraCommandInfo())
+                    }
+                }
+                return EntryListFile.pack(
+                    entrySize = entrySize,
+                    entryCount = commandList.size.toShort(),
+                    firstFile = listFile,
+                    secondFile = preservedBlob,
+                )
+            }
+
             val commandStructList = mutableListOf<Ability_CommandStruct>()
 
             // Text File
@@ -699,7 +809,6 @@ class Ability_Command {
                 }
             }
 
-            val entrySize: Short = if (hasExtraInfo) 0x60 else 0x5C
             return EntryListFile.pack(
                 entrySize = entrySize,
                 entryCount = commandList.size.toShort(),

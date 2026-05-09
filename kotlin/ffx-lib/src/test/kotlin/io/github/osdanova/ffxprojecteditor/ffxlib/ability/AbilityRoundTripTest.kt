@@ -1,6 +1,9 @@
 package io.github.osdanova.ffxprojecteditor.ffxlib.ability
 
+import io.github.osdanova.ffxprojecteditor.binary.BinaryMapping
 import io.github.osdanova.ffxprojecteditor.ffxlib.arm.Arms_Rate
+import io.github.osdanova.ffxprojecteditor.ffxlib.common.EntryListFile
+import io.github.osdanova.ffxprojecteditor.ffxlib.common.TextScriptInfo
 import io.github.osdanova.ffxprojecteditor.test.Fixtures
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.Test
@@ -93,6 +96,84 @@ class AbilityRoundTripTest {
                 "$rel did not round-trip byte-for-byte\n" + diffReport(original, rewritten)
             )
         }
+    }
+
+    /**
+     * Hand-builds a list whose text blob reuses the same offset for several
+     * empty / "shared" TS entries — exactly the layout the round-trip on real
+     * monmagic fixtures was tripping over. Without preserved-offset support,
+     * the writer reassigns sequential offsets for every empty entry and
+     * inflates the text blob, so this round trip would fail by length.
+     */
+    @Test
+    fun listWithSharedTextOffsetsRoundTripsByteForByte() {
+        // Text blob: entry 0's name at offset 0 ("ABC" + NULL); entry 1's name
+        // at offset 5 ("DEF" + NULL); entry 1's description at offset 9
+        // ("GH" + NULL). Empty entries deliberately point at offset 4 (the
+        // NULL terminator of "ABC") rather than each getting a fresh trailing
+        // NULL appended.
+        val textBlob = byteArrayOf(
+            'A'.code.toByte(), 'B'.code.toByte(), 'C'.code.toByte(), 0,  // [0..3]
+            0,                                                            // [4]
+            'D'.code.toByte(), 'E'.code.toByte(), 'F'.code.toByte(), 0,  // [5..8]
+            'G'.code.toByte(), 'H'.code.toByte(), 0,                     // [9..11]
+        )
+
+        fun ts(off: Int, sid: Int) = TextScriptInfo().apply {
+            offset = off.toUShort(); scriptId = sid.toUShort()
+        }
+
+        val struct0 = Ability_CommandStruct().apply {
+            nameTSInfo = ts(0, 1)
+            unusedText1TSInfo = ts(4, 0)            // shares the trailing NULL after "ABC"
+            descriptionTSInfo = ts(0, 2)            // shares "ABC" with the name
+            unusedText2TSInfo = ts(4, 0)            // shares the NULL again
+            abilityInfo = Ability_Command().apply { anim1Id = 0x1234 }
+        }
+        val struct1 = Ability_CommandStruct().apply {
+            nameTSInfo = ts(5, 3)
+            unusedText1TSInfo = ts(4, 0)            // shares entry 0's NULL
+            descriptionTSInfo = ts(9, 4)
+            unusedText2TSInfo = ts(4, 0)
+            abilityInfo = Ability_Command().apply { anim1Id = 0x5678 }
+        }
+
+        val firstFile = BinaryMapping.toByteArray(struct0) + BinaryMapping.toByteArray(struct1)
+        val original = EntryListFile.pack(
+            entrySize = 0x5C,
+            entryCount = 2,
+            firstFile = firstFile,
+            secondFile = textBlob,
+        )
+
+        val parsed = Ability_Command.readList(original, hasExtraInfo = false)
+        assertEquals(2, parsed.size)
+        // Sanity: entry 0's description does point back at the same bytes as its name.
+        assertContentEquals(parsed[0].nameScriptBytes, parsed[0].descriptionScriptBytes)
+
+        val rewritten = Ability_Command.writeList(parsed, hasExtraInfo = false)
+        assertContentEquals(original, rewritten,
+            "shared-offset list did not round-trip byte-for-byte\n${diffReport(original, rewritten)}")
+    }
+
+    /** Editing a script byte must invalidate preservation and force a full rebuild. */
+    @Test
+    fun editingScriptBytesInvalidatesPreservedBlobAndStillRoundTrips() {
+        // Build a baseline list, read it back, edit one script's bytes, then
+        // ensure the rewrite still reads back to the edited value.
+        val cmd = Ability_Command().apply {
+            anim1Id = 1
+            nameScriptBytes = byteArrayOf(0x10, 0x11)
+            descriptionScriptBytes = byteArrayOf(0x20)
+        }
+        val baseline = Ability_Command.writeList(listOf(cmd), hasExtraInfo = true)
+        val parsed = Ability_Command.readList(baseline, hasExtraInfo = true)
+        parsed[0].descriptionScriptBytes = byteArrayOf(0x33, 0x34, 0x35)
+
+        val rewritten = Ability_Command.writeList(parsed, hasExtraInfo = true)
+        val reread = Ability_Command.readList(rewritten, hasExtraInfo = true)
+        assertContentEquals(byteArrayOf(0x10, 0x11), reread[0].nameScriptBytes)
+        assertContentEquals(byteArrayOf(0x33, 0x34, 0x35), reread[0].descriptionScriptBytes)
     }
 
     @Test
