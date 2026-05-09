@@ -185,6 +185,35 @@ class MonsterRoundTripTest {
     }
 
     /**
+     * Some monster fixtures store the loot section without the historical
+     * 3-byte trailing padding (the surrounding file lays out the next
+     * sub-file immediately after `Unk3`). A strict 3-byte read used to
+     * crash with BufferUnderflowException; ensure we now read back cleanly
+     * and the rewrite preserves the original size.
+     */
+    @Test
+    fun lootHandlesShorterTrailingPaddingWithoutUnderflow() {
+        val full = Monster_Loot().apply { gil = 7; bribeId = 0x55u; zanmatoLevel = 1u }.writeSingle()
+        assertEquals(0x116 + 3, full.size, "default writeSingle should still emit 0x119 bytes")
+
+        // Trim the 3 trailing bytes the way a real fixture might.
+        val trimmed = full.copyOfRange(0, Monster_Loot.FIXED_SIZE)
+        val parsed = Monster_Loot.readSingle(trimmed)
+        assertEquals(7.toShort(), parsed.gil)
+        assertEquals(0x55u.toUShort(), parsed.bribeId)
+        assertEquals(1u.toUByte(), parsed.zanmatoLevel)
+        assertEquals(0, parsed.padding.size)
+        assertContentEquals(trimmed, parsed.writeSingle(),
+            "round-trip of a no-padding loot section must preserve its size")
+
+        // And a partial-padding case (2 bytes) round-trips identically too.
+        val partial = full.copyOfRange(0, Monster_Loot.FIXED_SIZE + 2)
+        val parsedPartial = Monster_Loot.readSingle(partial)
+        assertEquals(2, parsedPartial.padding.size)
+        assertContentEquals(partial, parsedPartial.writeSingle())
+    }
+
+    /**
      * Real-binary round trip: read an actual m###.bin from the user's
      * extracted master folder and re-emit it. Skipped when fixtures aren't
      * available (CI / fresh checkouts).

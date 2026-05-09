@@ -2,6 +2,8 @@ package io.github.osdanova.ffxprojecteditor.ffxlib.monster
 
 import io.github.osdanova.ffxprojecteditor.binary.BinField
 import io.github.osdanova.ffxprojecteditor.binary.BinaryMapping
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Per-character bonus abilities granted by a piece of looted gear. Each side
@@ -75,12 +77,29 @@ class Monster_Loot {
     @BinField var unk1: UByte = 0u
     @BinField var unk2: UByte = 0u
     @BinField var unk3: UByte = 0u
-    @BinField(count = 3) var padding: ByteArray = ByteArray(3)
+
+    // Trailing bytes that follow the fixed 0x116-byte struct on disk. The C#
+    // source modeled this as a fixed `[Data(Count=3)] byte[]` after Unk3, but
+    // some monster fixtures store fewer than 3 trailing bytes here — a strict
+    // 3-byte read crashes with BufferUnderflowException, and a strict 3-byte
+    // write would inflate the section and break round-trips. Treat it as a
+    // variable-length tail so we can faithfully read and re-emit whatever the
+    // file actually had. Default 3 zero bytes so freshly-constructed loot
+    // structs match the historical 0x119-byte layout.
+    var padding: ByteArray = ByteArray(3)
 
     companion object {
-        fun readSingle(byteFile: ByteArray): Monster_Loot =
-            BinaryMapping.read(byteFile, Monster_Loot::class)
+        /** Size of the fixed-layout body, before the variable trailing [padding]. */
+        const val FIXED_SIZE: Int = 0x116
+
+        fun readSingle(byteFile: ByteArray): Monster_Loot {
+            val buffer = ByteBuffer.wrap(byteFile).order(ByteOrder.LITTLE_ENDIAN)
+            val loot = BinaryMapping.read(buffer, Monster_Loot::class)
+            val tail = byteFile.size - buffer.position()
+            loot.padding = if (tail > 0) ByteArray(tail).also { buffer.get(it) } else ByteArray(0)
+            return loot
+        }
     }
 
-    fun writeSingle(): ByteArray = BinaryMapping.toByteArray(this, sizeHint = 512)
+    fun writeSingle(): ByteArray = BinaryMapping.toByteArray(this, sizeHint = 512) + padding
 }
